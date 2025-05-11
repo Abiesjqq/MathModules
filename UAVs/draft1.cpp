@@ -34,6 +34,7 @@ const int speed = 50;
 const int max_dist = 1000;
 const int min_dist = 50;
 const int epsilon = 10;
+const int time_step = 0.2;
 
 vector<candidate> population;  // 方案组成的数组
 vector<obstacle> obstacles;
@@ -59,30 +60,100 @@ int main() {
     // 进化过程
     for (int gen = 1; gen <= max_gen; gen++) {
         int cost_arr[pop_size] = {INF};
+
         // 计算每个方案的适应度,更新cost_arr数组
+        for (int i = 0; i < pop_size; i++) {
+            cost_arr[i] = calculateCost(population[i].assignment);
+        }
+
         // 生成下一代
 
         // 第一位的交换,变异,第二位的交换
     }
 }
 
+// 生成min~max间随机整数
+int generateRandom(int min, int max) {
+    random_device rd;
+    mt19937 gen(rd());
+
+    uniform_int_distribution<> distrib(min, max);
+    return distrib(gen);
+}
+
+// 第一位交换
+int firstCross(candidate candi) {
+    int ran1 = generateRandom(1, drone_num);
+    int ran2 = generateRandom(1, drone_num);
+    int uav_num1 = candi.assignment[ran1].first;
+    int uav_num2 = candi.assignment[ran2].first;
+    int tmp = uav_num1;
+    uav_num1 = uav_num2;
+    uav_num2 = tmp;
+}
+
+// 第一位突变
+int firstMutation(candidate candi) {
+    int ran1 = generateRandom(1, drone_num);
+    int ran2 = generateRandom(1, drone_num);
+    candi.assignment[ran1].first = ran2;
+}
+
+// 第二位交换
+int secondCross(candidate candi) {
+    int ran1 = generateRandom(1, drone_num);
+    int ran2 = generateRandom(1, drone_num);
+    int uav_num1 = candi.assignment[ran1].second;
+    int uav_num2 = candi.assignment[ran2].second;
+    int tmp = uav_num1;
+    uav_num1 = uav_num2;
+    uav_num2 = tmp;
+}
+
 int calculateCost(vector<pair<int, int>> assignment) {
     int cost = 0;
+    double total_time = 0.0;
     // 初始化
-    vector<position_coord> location;  // 表示t时刻各个无人机的位置,全零
+    vector<position_coord> uav_locations;  // 表示t时刻各个无人机的位置,全零
     for (int i = 1; i <= drone_num; i++) {
-        location.push_back((position_coord){0, 0});
+        uav_locations.push_back((position_coord){0, 0});
     }
-    int power[drone_num];
+    int uav_powers[drone_num];
     for (int i = 0; i < drone_num; i++) {
-        power[i] = max_time;
+        uav_powers[i] = max_time;
     }
 
-    //
-    /*location 无人机数量*2矩阵,
-    power 大小为n的数组,表示各个无人机的电量
+    bool in_origin[drone_num] = {false};
+    bool all_in_origin;
+
+    // 所有无人机回到原点之前,不断更新无人机位置
+    while (!all_in_origin) {
+        total_time += time_step;
+
+        vector<position_coord> new_uav_locations;
+        // 更新uav_locations
+        //
+
+        // 更新总距离
+        for (int i = 0; i < drone_num; i++) {
+            // cost += calculateDistance(uav_locations[i],
+            // new_uav_locations[i]);
+            uav_locations = new_uav_locations;
+        }
+
+        // 更新每个无人机的飞行时间
+        for (int i = 0; i < drone_num; i++) {
+            if (!in_origin[i]) {
+                uav_powers[i] -= time_step;
+            }
+        }
+    }
+
+    /*
+    uav_locations 无人机数量*2矩阵,
+    uav_powers大小为n的数组,表示各个无人机的电量
     利用swarm(粒子群)更新location,直到所有所有无人机返回原点
-    用结束问题时的时间作为cost
+    用结束问题时的时间作为cost(?)
     */
 }
 
@@ -166,8 +237,9 @@ bool is_valid(vector<UAV> uavs, vector<obstacle> obstacles) {
 }
 
 // 计算fitness
-int calculate_fitness(candidate plan, vector<double> angles, vector<UAV> uavs) {
-    int time_step = 0.2;   // 时间步长
+int calculate_fitness(candidate plan,
+                      vector<double> angles,
+                      vector<UAV>& uavs) {
     bool vis[target_num];  // 标记是否到达过
     for (int i = 0; i < target_num; i++)
         vis[i] = false;
@@ -219,4 +291,22 @@ int calculate_fitness(candidate plan, vector<double> angles, vector<UAV> uavs) {
     }
 
     // 增加全局的下一个目标到对应的无人机的距离
+    // 存疑(?)
+    int unvisted_target;
+    for (unvisted_target = 0; unvisted_target < target_num; unvisted_target++) {
+        if (!vis[unvisted_target])
+            break;
+    }
+    int uav_idx;
+    for (pair<int, int> v : plan.assignment) {
+        if (v.second == unvisted_target) {
+            uav_idx = v.first;
+            break;
+        }
+    }
+
+    fitness +=
+        calculateDistance(targets[unvisted_target], uavs[uav_idx].position);
+
+    return fitness;
 }
