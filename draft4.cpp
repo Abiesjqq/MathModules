@@ -84,11 +84,6 @@ int main() {
     return 0;
 }
 
-// 工具函数（与原代码相同）
-namespace Utils {
-double calculateDistance(position_coord pos1, position_coord pos2) {
-    return sqrt(pow(pos1.x - pos2.x, 2) + pow(pos1.y - pos2.y, 2));
-}
 double getPriorityWeight(TaskType priority) {
     switch (priority) {
         case EMERGENCY_DELIVERY:
