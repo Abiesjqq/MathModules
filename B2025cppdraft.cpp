@@ -1036,44 +1036,53 @@ vector<double> swarm(const vector<UAV>& initial_uavs,
     vector<bool> movable(drone_num, true);  // 标记无人机是否可移动
     vector<int> movable_indices;            // 可移动无人机的索引
 
-    // 首先检查是否存在距离原点(0,0)在(0,50)米范围内的无人机
-    bool has_near_origin_drone = false;
-    for (const UAV& uav : initial_uavs) {
-        double dist_origin = sqrt(uav.position.x * uav.position.x +
-                                  uav.position.y * uav.position.y);
-        if (dist_origin > 0 && dist_origin < 50) {
-            has_near_origin_drone = true;
+    // 确定可移动的无人机
+    vector<double> distances(drone_num);  // 预先计算所有无人机到原点的距离
+    for (int i = 0; i < drone_num; ++i) {
+        const UAV& uav = initial_uavs[i];
+        movable[i] = (uav.working_time >= 0) && (uav.hovering_time >= 0);
+        double x = uav.position.x;
+        double y = uav.position.y;
+        distances[i] = sqrt(x * x + y * y);
+    }
+
+    // 检查是否有无人机在原点附近50米（不含原点）
+    bool has_drone_in_50m = false;
+    for (int i = 0; i < drone_num; ++i) {
+        if (distances[i] > epsilon && distances[i] <= 50) {
+            has_drone_in_50m = true;
             break;
         }
     }
 
-    // 确定可移动的无人机
-    for (int i = 0; i < drone_num; ++i) {
-        const UAV& uav = initial_uavs[i];
-
-        // 基本不可移动条件
-        movable[i] = (uav.working_time >= 0) && (uav.hovering_time >= 0);
-
-        // 如果有无人机在原点附近(0,50)，则所有在原点(距离=0)的无人机不可移动
-        if (has_near_origin_drone) {
-            double dist_origin = sqrt(uav.position.x * uav.position.x +
-                                      uav.position.y * uav.position.y);
-            if (dist_origin <=
-                epsilon) {  // epsilon是接近0的小量，判断是否在原点
+    // 处理原点相关的条件
+    if (has_drone_in_50m) {
+        // 所有在原点的无人机不可移动
+        for (int i = 0; i < drone_num; ++i) {
+            if (distances[i] <= epsilon) {
                 movable[i] = false;
             }
         }
+    } else {
+        // 收集在原点且满足基本条件的无人机
+        vector<int> eligible_indices;
+        for (int i = 0; i < drone_num; ++i) {
+            if (distances[i] <= epsilon && movable[i]) {
+                eligible_indices.push_back(i);
+            }
+        }
+        if (!eligible_indices.empty()) {
+            int min_idx =
+                *min_element(eligible_indices.begin(), eligible_indices.end());
+            for (int idx : eligible_indices) {
+                movable[idx] = (idx == min_idx);  // 只有最小编号的可移动
+            }
+        }
+    }
 
-        // 如果当前无人机工作时间为0，检查是否有编号更小的无人机工作时间为0
-        // if (movable[i] && uav.working_time == 0) {
-        //     for (int j = 0; j < i; ++j) {
-        //         if (initial_uavs[j].working_time == 0) {
-        //             movable[i] = false;
-        //             break;
-        //         }
-        //     }
-        // }
-
+    // 收集可移动的无人机索引
+    movable_indices.clear();
+    for (int i = 0; i < drone_num; ++i) {
         if (movable[i]) {
             movable_indices.push_back(i);
         }
@@ -1356,6 +1365,8 @@ bool isStateLegal(const vector<UAV>& uavs,
                         "Minimum distance violated between UAV %zu and UAV "
                         "%zu\n",
                         i, j);
+                    printf("place: (%.2f, %.2f) (%.2f, %.2f)\n", a.position.x,
+                           a.position.y, b.position.x, b.position.y);
                     return false;
                 }
             }
