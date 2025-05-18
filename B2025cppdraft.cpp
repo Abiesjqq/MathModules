@@ -108,7 +108,7 @@ const int INF = 4e7;
 const int speed = 50;
 const int max_dist = 1000;
 const int min_dist = 50;
-const int epsilon = 10;
+const int epsilon = 7;
 const double time_step = 0.2;
 
 // 其余代码保持不变...
@@ -692,223 +692,188 @@ bool feasibility(const candidate& candidate1) {
 }
 
 double calculateCost(candidate candidate1) {
-    // ----------------------
-    printf("Calculating cost for candidate...\n");
-
-    /**
-     * @brief 计算候选方案的总成本
-     *
-     * @param candidate1 要评估的候选方案
-     * @return 双精度浮点数，表示总成本（INF表示无效方案）
-     *
-     * 总成本公式：
-     * cost = 5 * T1（所有紧急投递完成时间） + 2 * T2（所有普通投递完成时间） +
-     * T3（所有侦查完成时间）
-     *
-     * 模拟流程：
-     * 1. 初始化无人机状态
-     * 2. 每0.2秒调用swarm函数获取移动方向
-     * 3. 更新无人机位置、工作时间、悬停时间
-     * 4. 检查任务完成条件并记录时间
-     */
-
-    // 第一步：可行性检查
     if (!feasibility(candidate1)) {
         printf("Feasibility check failed.\n");
         return INF;
     }
+    vector<UAV> current_uavs = uavs;
+    int drone_num = current_uavs.size();
+    int total_tasks = candidate1.assignment.size();
 
-    // -------------
-    printf("Feasibility check passed.\n");
-
-    // 第二步：复制原始无人机状态（避免修改全局变量）
-    std::vector<UAV> current_uavs(uavs.begin(), uavs.end());
-
-    // 第三步：解析任务分配（按无人机编号存储任务列表）
-    std::vector<std::vector<int>> drone_tasks(drone_num +
-                                              1);  // 1-based无人机编号
-    for (const auto& p : candidate1.assignment) {
-        int drone_id = p.first;
-        int task_id = p.second;
-        drone_tasks[drone_id].push_back(task_id);
-    }
-
-    // 第四步：初始化无人机状态结构
-    struct UAV_state {
-        UAV uav;                        // 当前无人机状态
-        std::vector<int> task_queue;    // 该无人机的任务列表
-        int current_task_index = 0;     // 当前任务在队列中的索引
-        position_coord current_target;  // 当前目标点坐标
-    };
-    std::vector<UAV_state> states(drone_num);
-
-    // -------------
-    printf("UAV states initialized.\n");
-
-    // 初始化每个无人机的状态
-    for (int i = 0; i < drone_num; ++i) {
-        states[i].uav = current_uavs[i];            // 复制初始状态
-        states[i].task_queue = drone_tasks[i + 1];  // drone_id是i+1（1-based）
-
-        // 设置初始目标点
-        if (!states[i].task_queue.empty()) {
-            int first_task_id = states[i].task_queue[0];
-            if (first_task_id <= target_num) {
-                // 目标点任务（坐标来自任务列表）
-                const task& first_task = tasks[first_task_id - 1];
-                states[i].current_target = {(double)first_task.x, first_task.y};
-            } else {
-                // 充电任务（目标点为原点）
-                states[i].current_target = {0.0, 0.0};
-            }
-        } else {
-            // 无任务则默认目标点为原点
-            states[i].current_target = {0.0, 0.0};
+    // 统计任务类型数量
+    int num_emergency = 0, num_normal = 0, num_recon = 0;
+    for (const task& t : tasks) {
+        switch(t.priority) {
+            case EMERGENCY_DELIVERY: num_emergency++; break;
+            case NORMAL_DELIVERY: num_normal++; break;
+            case RECON: num_recon++; break;
         }
     }
 
-    // -------------------------
-    printf("All UAV states initialized.\n");
-
-    // 第五步：初始化计数器和时间变量
-    int total_tasks = tasks.size();
+    double T = 0;
+    double T1 = -1, T2 = -1, T3 = -1;
     int accomplished = 0;
-    double emergency_time = 0.0, normal_time = 0.0, recon_time = 0.0;
-    double current_time = 0.0;
+    int emergency_count = 0, normal_count = 0, recon_count = 0;
 
-    // ----------------------------
-    printf("Simulation started.\n");
+    // 构建任务映射：全局任务序号 -> (无人机ID, 任务对象)
+    unordered_map<int, pair<int, task>> task_map;
+    for (const auto& assignment_pair : candidate1.assignment) {
+        int drone_id = assignment_pair.first;
+        int task_seq = assignment_pair.second;
+        if (task_seq <= tasks.size()) {
+            task_map[task_seq] = {drone_id, tasks[task_seq - 1]};
+        }
+    }
 
-    // 第六步：主模拟循环（直到所有任务完成）
     while (accomplished < total_tasks) {
-        // 检查是否有无人机电量耗尽
-        bool any_fail = false;
-        for (const auto& s : states) {
-            if (s.uav.working_time > s.uav.max_working_time) {
-                any_fail = true;
+        // 判断哪些无人机可移动
+        bool has_near_drone = false;
+        for (const UAV& uav : current_uavs) {
+            double dx = uav.position.x;
+            double dy = uav.position.y;
+            double dist = sqrt(dx*dx + dy*dy);
+            if (dist > 0 && dist < 50) {
+                has_near_drone = true;
                 break;
             }
         }
-        if (any_fail)
-            return INF;
 
-        // 获取无人机移动方向（由swarm函数计算）
-        std::vector<double> directions =
-            swarm(current_uavs, candidate1, accomplished);
-
-        // 更新每个无人机的状态
+        vector<bool> movable(drone_num, false);
         for (int i = 0; i < drone_num; ++i) {
-            UAV_state& s = states[i];
-            UAV& uav = s.uav;
+            const UAV& uav = current_uavs[i];
+            bool cond1 = (uav.working_time >= 0);
+            bool cond2 = (uav.hovering_time >= 0);
+            movable[i] = cond1 && cond2;
 
-            // 更新悬停时间（无论是否移动，每0.2秒增加）
-            uav.hovering_time += time_step;
+            if (movable[i] && has_near_drone) {
+                double dist_origin = sqrt(uav.position.x*uav.position.x + uav.position.y*uav.position.y);
+                if (dist_origin <= epsilon && dist_origin > 0) {
+                    movable[i] = false;
+                }
+            }
+        }
 
-            // 更新工作时间（条件判断见下文）
-            if (uav.position.x == 0.0 && uav.position.y == 0.0 &&
-                uav.working_time == 0.0) {
-                // 在原点且工作时间为0时不增加
-            } else {
+        // 调用swarm获取方向
+        vector<double> directions = swarm(current_uavs, candidate1, accomplished);
+
+        // 移动无人机
+        for (int i = 0; i < drone_num; ++i) {
+            if (!movable[i]) continue;
+            UAV& uav = current_uavs[i];
+            double dir = directions[i];
+            double delta_x = speed * time_step * cos(dir);
+            double delta_y = speed * time_step * sin(dir);
+            uav.position.x += delta_x;
+            uav.position.y += delta_y;
+
+            double new_x = uav.position.x;
+            double new_y = uav.position.y;
+            double dist_origin = sqrt(new_x*new_x + new_y*new_y);
+            if (dist_origin <= epsilon) {
+                uav.position.x = 0.0;
+                uav.position.y = 0.0;
+                uav.working_time = -60;
+            }
+        }
+
+        // 更新时间参数
+        for (int i = 0; i < drone_num; ++i) {
+            UAV& uav = current_uavs[i];
+            double dist_origin = sqrt(uav.position.x*uav.position.x + uav.position.y*uav.position.y);
+            bool at_origin = (dist_origin <= epsilon);
+
+            if (!(at_origin && uav.working_time == 0) && uav.working_time >= 0) {
                 uav.working_time += time_step;
-            }
-
-            // 判断是否可移动（不可移动的条件见用户要求）
-            bool is_movable = true;
-            if (uav.working_time < 0) {  // 充电状态
-                is_movable = false;
-            } else if (uav.hovering_time < 0) {  // 悬停状态
-                is_movable = false;
-            } else if (uav.working_time == 0) {  // 需检查是否有更早的无人机
-                // 如果存在编号更小的无人机也处于 working_time == 0，则不可移动
-                for (int j = 0; j < i; ++j) {
-                    if (states[j].uav.working_time == 0) {
-                        is_movable = false;
-                        break;
-                    }
+                if (uav.working_time > uav.max_working_time) {
+                    uav.working_time = uav.max_working_time;
                 }
             }
 
-            if (is_movable) {  // 可移动的无人机更新位置
-                // 根据方向移动（速度为50米/秒，时间步长0.2秒）
-                double dir = directions[i];
-                double dx = speed * time_step * std::cos(dir);
-                double dy = speed * time_step * std::sin(dir);
-                uav.position.x += dx;
-                uav.position.y += dy;
+            if (uav.hovering_time >= 0) {
+                uav.hovering_time += time_step;
+            }
+        }
 
-                // 检查是否到达目标点
-                position_coord target = s.current_target;
-                double distance_to_target =
-                    distance(uav.position, target);  // 调用封装的距离函数
+        // 检查任务是否完成
+        int next_task_seq = accomplished + 1;
+        if (task_map.find(next_task_seq) != task_map.end()) {
+            auto [drone_id, tsk] = task_map[next_task_seq];
+            UAV& drone = current_uavs[drone_id - 1];
 
-                if (distance_to_target <= epsilon) {  // 到达目标点
-                    if (target.x == 0.0 && target.y == 0.0) {
-                        // 充电任务完成，开始充电
-                        uav.working_time = -60.0;
-                    } else {
-                        // 处理目标点任务
-                        int task_id = s.task_queue[s.current_task_index];
-                        const task& t = tasks[task_id - 1];  // 转换为0-based
+            double target_x, target_y;
+            if (next_task_seq <= target_num) {
+                target_x = tsk.x;
+                target_y = tsk.y;
+            } else {
+                target_x = 0.0;
+                target_y = 0.0;
+            }
 
-                        switch (t.priority) {
-                            case RECON:  // 侦查任务
-                                uav.hovering_time = -t.requirement.hover_time;
-                                break;
-                            case EMERGENCY_DELIVERY:
-                            case NORMAL_DELIVERY:  // 投递任务
-                                // 记录任务完成时间
-                                if (t.priority == EMERGENCY_DELIVERY) {
-                                    emergency_time =
-                                        std::max(emergency_time, current_time);
-                                } else {
-                                    normal_time =
-                                        std::max(normal_time, current_time);
-                                }
-                                // 更新已完成任务数
-                                accomplished++;
-                                // 切换到下一个任务
-                                s.current_task_index++;
-                                if (s.current_task_index <
-                                    s.task_queue.size()) {
-                                    int next_task_id =
-                                        s.task_queue[s.current_task_index];
-                                    if (next_task_id <= target_num) {
-                                        // 下一个任务是目标点任务
-                                        const task& next_t =
-                                            tasks[next_task_id - 1];
-                                        s.current_target = {next_t.x, next_t.y};
-                                    } else {
-                                        // 下一个任务是充电任务
-                                        s.current_target = {0.0, 0.0};
-                                    }
-                                }
-                                break;
-                        }
+            double dx = drone.position.x - target_x;
+            double dy = drone.position.y - target_y;
+            double distance = sqrt(dx*dx + dy*dy);
+
+            bool completed = false;
+            if (next_task_seq <= target_num) {
+                if (tsk.priority == RECON) {
+                    // 侦察任务需要先到达目标点
+                    if (distance <= epsilon) {
+                        drone.hovering_time = -tsk.requirement.hover_time;
+                        completed = true;
+                    }
+                } else {
+                    // 投递任务直接到达即可
+                    if (distance <= epsilon) {
+                        completed = true;
+                    }
+                }
+            } else {
+                // 充电任务到达原点
+                if (distance <= epsilon) {
+                    completed = true;
+                }
+            }
+
+            if (completed) {
+                accomplished++;
+                double current_time = T;
+
+                if (next_task_seq <= target_num) {
+                    switch(tsk.priority) {
+                        case EMERGENCY_DELIVERY:
+                            emergency_count++;
+                            if (emergency_count == num_emergency) {
+                                T1 = current_time;
+                            }
+                            break;
+                        case NORMAL_DELIVERY:
+                            normal_count++;
+                            if (normal_count == num_normal) {
+                                T2 = current_time;
+                            }
+                            break;
+                        case RECON:
+                            recon_count++;
+                            if (recon_count == num_recon) {
+                                // 侦察任务的完成时间是当前时间加上悬停时间
+                                T3 = current_time + tsk.requirement.hover_time;
+                            }
+                            break;
                     }
                 }
             }
         }
 
-        // --------------------
-        printf("Time: %.2f    ", current_time);
-        printf("Accomplished tasks: %d\n", accomplished);
-
-        // 更新当前时间（时间步长0.2秒）
-        current_time += time_step;
+        // 增加时间
+        T += time_step;
     }
 
-    // 第七步：计算侦查任务的最晚完成时间
-    for (const auto& s : states) {
-        for (int task_id : s.task_queue) {
-            const task& t = tasks[task_id - 1];
-            if (t.priority == RECON) {
-                recon_time = std::max(recon_time, current_time);
-            }
-        }
-    }
+    // 处理未完成的情况
+    if (num_emergency == 0) T1 = 0;
+    if (num_normal == 0) T2 = 0;
+    if (num_recon == 0) T3 = 0;
 
-    // 返回总成本
-    return 5 * emergency_time + 2 * normal_time + recon_time;
+    return 5 * T1 + 2 * T2 + T3;
 }
 
 // distance的辅助函数：判断线段与障碍的相交性
@@ -1340,22 +1305,6 @@ bool isStateLegal(const vector<UAV>& uavs,
             if (p.second == global_next_order) {
                 assigned_uav_id = p.first;
                 break;
-            }
-        }
-
-        // 检查其他无人机是否过早访问后续目标点
-        for (size_t uav_idx = 0; uav_idx < uavs.size(); ++uav_idx) {
-            int current_uav_id = uav_idx + 1;
-            if (current_uav_id == assigned_uav_id)
-                continue;  // 跳过负责无人机
-
-            const UAV& uav = uavs[uav_idx];
-            for (const position_coord& pos : later_positions) {
-                double dx = uav.position.x - pos.x;
-                double dy = uav.position.y - pos.y;
-                double dist = sqrt(dx * dx + dy * dy);
-                if (dist < epsilon)
-                    return false;
             }
         }
     }
