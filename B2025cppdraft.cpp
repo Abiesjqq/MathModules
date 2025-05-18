@@ -1,6 +1,4 @@
-// 还有IO，swarm, fitness三部分
 #include <bits/stdc++.h>
-#include <fstream>
 using namespace std;
 
 // 结构体定义
@@ -33,27 +31,9 @@ struct Circle {
 vector<Circle> obstacles;
 struct candidate {
     vector<pair<int, int>> assignment;
-    /*
-    在assignment中，每个元素表示一个任务，其中的前target_num个任务是需要去某个目标点完成的投递或侦查任务，
-    后面的若干的任务是需要去原点完成的充电任务。
-    每个任务的第一个分量表示这个任务由第几个无人机完成，第二个分量表示这个任务在全局所有任务中的排序
-    （无人机编号和任务序号都是从1开始的）
-    */
     double cost;
 };
 
-// 全局变量
-int drone_num, target_num;
-vector<UAV> uavs;
-vector<task> tasks;
-vector<position_coord> targets;
-RandomGenerator rng;
-const int INF = 4e5;           // 表示无穷大的值
-const int speed = 50;          // 无人机速度（米/秒）
-const int max_dist = 1000;     // 无人机间最大距离（米）
-const int min_dist = 50;       // 无人机间最小安全距离（米）
-const int epsilon = 10;        // 接近阈值（米）
-const double time_step = 0.2;  // 仿真时间步长（秒）
 class RandomGenerator {
    private:
     mt19937 gen;                                  // 随机数引擎
@@ -78,19 +58,113 @@ class RandomGenerator {
     }
 };
 
-// 工具函数命名空间
-namespace Utils {
-// 计算两点间距离
-double calculateDistance(position_coord pos1, position_coord pos2) {
-    return sqrt(pow((pos1.x - pos2.x), 2) + pow((pos1.y - pos2.y), 2));
-}
-};  // namespace Utils
+// 全局变量
+extern int drone_num, target_num;
+extern vector<UAV> uavs;
+extern vector<task> tasks;
+extern vector<position_coord> targets;
+extern RandomGenerator rng;
+extern const int INF;
+extern const int speed;
+extern const int max_dist;
+extern const int min_dist;
+extern const int epsilon;
+extern const double time_step;
 
-int main() {
-    input();
-    candidate best_candidate = GA();
-    output(best_candidate);
-    return 0;
+// 函数声明
+void input();
+void output(const candidate& best_candidate);
+double getPriorityWeight(TaskType priority);
+candidate GA();
+void updateTaskIds(candidate& cand);
+bool feasibility(const candidate& candidate1);
+double calculateCost(candidate candidate1);
+bool doesSegmentIntersectCircle(const position_coord& A,
+                                const position_coord& B,
+                                const Circle& Z);
+vector<position_coord> getTangentPoints(const position_coord& P,
+                                        const Circle& Z);
+double arcLength(const position_coord& C,
+                 const position_coord& D,
+                 const Circle& Z);
+double distance(const position_coord& a, const position_coord& b);
+vector<double> swarm(const vector<UAV>& initial_uavs,
+                     const candidate& candidate1,
+                     int accomplished);
+double calculateFitness(const vector<UAV>& uavs,
+                        const candidate candidate1,
+                        int accomplished);
+bool isStateLegal(const vector<UAV>& uavs,
+                  int accomplished,
+                  const candidate& candidate1);
+
+// 全局变量定义
+int drone_num, target_num;
+vector<UAV> uavs;
+vector<task> tasks;
+vector<position_coord> targets;
+RandomGenerator rng;
+const int INF = 4e7;
+const int speed = 50;
+const int max_dist = 1000;
+const int min_dist = 50;
+const int epsilon = 10;
+const double time_step = 0.2;
+
+// 其余代码保持不变...
+
+void input() {
+    // 读取无人机数量
+    cin >> drone_num;
+    uavs.resize(drone_num);
+
+    // 读取每架无人机的参数
+    for (int i = 0; i < drone_num; ++i) {
+        cin >> uavs[i].load_capacity >> uavs[i].max_working_time >>
+            uavs[i].hover_capacity;
+        uavs[i].position = {0.0, 0.0};  // 初始位置为原点
+        uavs[i].working_time = 0.0;
+        uavs[i].hovering_time = 0.0;
+    }
+
+    // 读取目标点数量
+    cin >> target_num;
+    tasks.resize(target_num);
+
+    // 读取每个任务的参数
+    for (int i = 0; i < target_num; ++i) {
+        string type_str;
+        cin >> type_str >> tasks[i].x >> tasks[i].y;
+
+        // 设置任务类型
+        if (type_str == "EMERGENCY_DELIVERY") {
+            tasks[i].priority = EMERGENCY_DELIVERY;
+            cin >> tasks[i].requirement.load;
+        } else if (type_str == "NORMAL_DELIVERY") {
+            tasks[i].priority = NORMAL_DELIVERY;
+            cin >> tasks[i].requirement.load;
+        } else if (type_str == "RECON") {
+            tasks[i].priority = RECON;
+            cin >> tasks[i].requirement.hover_time;
+        }
+        tasks[i].num = i + 1;  // 任务编号从1开始
+    }
+
+    // 读取障碍物数量
+    int obstacle_num;
+    cin >> obstacle_num;
+    obstacles.resize(obstacle_num);
+
+    // 读取每个障碍物的参数
+    for (int i = 0; i < obstacle_num; ++i) {
+        cin >> obstacles[i].x >> obstacles[i].y >> obstacles[i].r;
+    }
+
+    printf("Input completed. Number of drones: %d, Number of targets: %d\n",
+           drone_num, target_num);
+
+    // 初始化随机数生成器
+    rng = RandomGenerator();
 }
 
 void output(const candidate& best_candidate) {
@@ -170,7 +244,8 @@ void output(const candidate& best_candidate) {
             break;
 
         // 获取无人机移动方向
-        vector<double> directions = swarm();
+        vector<double> directions =
+            swarm(current_uavs, best_candidate, accomplished);  // 计算移动方向
 
         // 更新每个无人机的状态
         for (int i = 0; i < drone_num; ++i) {
@@ -215,9 +290,41 @@ void output(const candidate& best_candidate) {
                 // 检查是否到达目标点
                 position_coord target = s.current_target;
                 double distance_to_target =
-                    Utils::calculateDistance(uav.position, target);
+                    sqrt(pow(uav.position.x - target.x, 2) +
+                         pow(uav.position.y - target.y, 2));
 
-                if (distance_to_target <= epsilon) {
+                if (distance_to_target <= epsilon)
+
+                    /*
+                    {
+                        if (target.x == 0.0 && target.y == 0.0) {
+                            // 充电任务
+                            uav.working_time = -60.0;
+                        } else {
+                            // 处理目标点任务
+                            int task_id = s.task_queue[s.current_task_index];
+                            const task& t = tasks[task_id - 1];
+
+                            if (t.priority == RECON) {
+                                uav.hovering_time = -t.requirement.hover_time;
+                            } else {
+                                accomplished++;
+                                s.current_task_index++;
+                                if (s.current_task_index < s.task_queue.size())
+                    { int next_task_id = s.task_queue[s.current_task_index]; if
+                    (next_task_id <= target_num) { const task& next_t =
+                                            tasks[next_task_id - 1];
+                                        s.current_target = {next_t.x, next_t.y};
+                                    } else {
+                                        s.current_target = {0.0, 0.0};
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    */
+                    //
                     if (target.x == 0.0 && target.y == 0.0) {
                         // 充电任务
                         uav.working_time = -60.0;
@@ -244,7 +351,7 @@ void output(const candidate& best_candidate) {
                             }
                         }
                     }
-                }
+
             } else {
                 // 不可移动时保持当前位置
                 s.path.push_back(uav.position);
@@ -278,55 +385,11 @@ void output(const candidate& best_candidate) {
          << endl;
 }
 
-void input() {
-    // 读取无人机数量
-    cin >> drone_num;
-    uavs.resize(drone_num);
-
-    // 读取每架无人机的参数
-    for (int i = 0; i < drone_num; ++i) {
-        cin >> uavs[i].load_capacity >> uavs[i].max_working_time >>
-            uavs[i].hover_capacity;
-        uavs[i].position = {0.0, 0.0};  // 初始位置为原点
-        uavs[i].working_time = 0.0;
-        uavs[i].hovering_time = 0.0;
-    }
-
-    // 读取目标点数量
-    cin >> target_num;
-    tasks.resize(target_num);
-
-    // 读取每个任务的参数
-    for (int i = 0; i < target_num; ++i) {
-        string type_str;
-        cin >> type_str >> tasks[i].x >> tasks[i].y;
-
-        // 设置任务类型
-        if (type_str == "EMERGENCY_DELIVERY") {
-            tasks[i].priority = EMERGENCY_DELIVERY;
-            cin >> tasks[i].requirement.load;
-        } else if (type_str == "NORMAL_DELIVERY") {
-            tasks[i].priority = NORMAL_DELIVERY;
-            cin >> tasks[i].requirement.load;
-        } else if (type_str == "RECON") {
-            tasks[i].priority = RECON;
-            cin >> tasks[i].requirement.hover_time;
-        }
-        tasks[i].num = i + 1;  // 任务编号从1开始
-    }
-
-    // 读取障碍物数量
-    int obstacle_num;
-    cin >> obstacle_num;
-    obstacles.resize(obstacle_num);
-
-    // 读取每个障碍物的参数
-    for (int i = 0; i < obstacle_num; ++i) {
-        cin >> obstacles[i].x >> obstacles[i].y >> obstacles[i].r;
-    }
-
-    // 初始化随机数生成器
-    rng = RandomGenerator();
+int main() {
+    input();
+    candidate best_candidate = GA();
+    output(best_candidate);
+    return 0;
 }
 
 double getPriorityWeight(TaskType priority) {
@@ -341,8 +404,6 @@ double getPriorityWeight(TaskType priority) {
             return 1.0;
     }
 }
-
-// 输入输出函数
 
 candidate GA() {
     int max_gen = 15 * drone_num + 50;                // 最大迭代次数
@@ -373,6 +434,9 @@ candidate GA() {
         population[i] = candi;
     }
 
+    // ----------------------------------------------------
+    printf("Population initialized with %d candidates.\n", pop_size);
+
     candidate best_candidate;
     best_candidate.cost = INF;
 
@@ -380,13 +444,22 @@ candidate GA() {
     for (int i = 0; i < pop_size; i++) {
         population[i].cost = calculateCost(population[i]);
     }
+
+    // ---------------------------------
+    printf("Initial population evaluated.\n");
+
     sort(
         population.begin(), population.end(),
         [](const candidate& a, const candidate& b) { return a.cost < b.cost; });
     best_candidate = population[0];
 
+    //----------------------------------------
+    printf("Initial population evaluated. Best cost = %.2f\n",
+           best_candidate.cost);
+
     // 遗传算法主循环
     for (int gen = 1; gen <= max_gen; gen++) {
+        printf("Generation %d: Best cost = %.2f\n", gen, best_candidate.cost);
         vector<candidate> temp_population(pop_size);
 
         // 精英保留
@@ -574,7 +647,11 @@ bool feasibility(const candidate& candidate1) {
             while (end < tasks_list.size() && tasks_list[end] <= target_num) {
                 end++;
             }
-
+            if (end == start) {
+                // 当前航段为空，直接跳过。
+                start = end + 1;
+                continue;
+            }
             int total_load = 0;                    // 当前航行段的总载荷
             double total_distance = 0;             // 当前航行段的总航程
             position_coord prev_pos = {0.0, 0.0};  // 起点为原点
@@ -589,10 +666,13 @@ bool feasibility(const candidate& candidate1) {
                     t.priority == NORMAL_DELIVERY) {
                     total_load += t.requirement.load;
                 }
+                printf("Task %d: Load = %d\n", t.num, total_load);
 
                 // 计算航程（使用distance函数）
                 position_coord current_pos = {t.x, t.y};
                 total_distance += distance(prev_pos, current_pos);
+                printf("Task %d: Distance = %.2f\n", t.num, total_distance);
+                // 检查与障碍物的碰撞
                 prev_pos = current_pos;  // 更新前一个位置为当前位置
             }
 
@@ -607,10 +687,14 @@ bool feasibility(const candidate& candidate1) {
             start = end;  // 移动到下一个航行段的起始位置
         }
     }
+    printf("Feasibility check passed for candidate.\n");
     return true;  // 所有条件满足
 }
 
 double calculateCost(candidate candidate1) {
+    // ----------------------
+    printf("Calculating cost for candidate...\n");
+
     /**
      * @brief 计算候选方案的总成本
      *
@@ -629,8 +713,13 @@ double calculateCost(candidate candidate1) {
      */
 
     // 第一步：可行性检查
-    if (!feasibility(candidate1))
+    if (!feasibility(candidate1)) {
+        printf("Feasibility check failed.\n");
         return INF;
+    }
+
+    // -------------
+    printf("Feasibility check passed.\n");
 
     // 第二步：复制原始无人机状态（避免修改全局变量）
     std::vector<UAV> current_uavs(uavs.begin(), uavs.end());
@@ -652,6 +741,9 @@ double calculateCost(candidate candidate1) {
         position_coord current_target;  // 当前目标点坐标
     };
     std::vector<UAV_state> states(drone_num);
+
+    // -------------
+    printf("UAV states initialized.\n");
 
     // 初始化每个无人机的状态
     for (int i = 0; i < drone_num; ++i) {
@@ -675,11 +767,17 @@ double calculateCost(candidate candidate1) {
         }
     }
 
+    // -------------------------
+    printf("All UAV states initialized.\n");
+
     // 第五步：初始化计数器和时间变量
     int total_tasks = tasks.size();
     int accomplished = 0;
     double emergency_time = 0.0, normal_time = 0.0, recon_time = 0.0;
     double current_time = 0.0;
+
+    // ----------------------------
+    printf("Simulation started.\n");
 
     // 第六步：主模拟循环（直到所有任务完成）
     while (accomplished < total_tasks) {
@@ -695,7 +793,8 @@ double calculateCost(candidate candidate1) {
             return INF;
 
         // 获取无人机移动方向（由swarm函数计算）
-        std::vector<double> directions = swarm();  // 假设返回弧度制方向数组
+        std::vector<double> directions =
+            swarm(current_uavs, candidate1, accomplished);
 
         // 更新每个无人机的状态
         for (int i = 0; i < drone_num; ++i) {
@@ -790,6 +889,10 @@ double calculateCost(candidate candidate1) {
             }
         }
 
+        // --------------------
+        printf("Time: %.2f    ", current_time);
+        printf("Accomplished tasks: %d\n", accomplished);
+
         // 更新当前时间（时间步长0.2秒）
         current_time += time_step;
     }
@@ -808,10 +911,454 @@ double calculateCost(candidate candidate1) {
     return 5 * emergency_time + 2 * normal_time + recon_time;
 }
 
-// calculateCost的辅助函数：计算等效距离
+// distance的辅助函数：判断线段与障碍的相交性
+bool doesSegmentIntersectCircle(const position_coord& A,
+                                const position_coord& B,
+                                const Circle& Z) {
+    double xc = Z.x;
+    double yc = Z.y;
+    double r = Z.r;
+    double Ax = A.x, Ay = A.y;
+    double Bx = B.x, By = B.y;
+    double dx = Bx - Ax;
+    double dy = By - Ay;
+    double ax = Ax - xc;
+    double ay = Ay - yc;
+    double a = dx * dx + dy * dy;
+    double b = 2 * (dx * ax + dy * ay);
+    double c = ax * ax + ay * ay - r * r;
+    double discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0)
+        return false;
+    if (a == 0) {
+        return (ax * ax + ay * ay < r * r);
+    }
+
+    double sqrtD = sqrt(discriminant);
+    double t1 = (-b - sqrtD) / (2 * a);
+    double t2 = (-b + sqrtD) / (2 * a);
+
+    bool intersect = false;
+
+    if (discriminant > 0) {
+        if ((t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1)) {
+            intersect = true;
+        }
+    } else if (discriminant == 0) {
+        intersect = false;
+    }
+
+    return intersect;
+}
+
+// distance的辅助函数：取切点
+std::vector<position_coord> getTangentPoints(const position_coord& P,
+                                             const Circle& Z) {
+    double xc = Z.x;
+    double yc = Z.y;
+    double r = Z.r;
+    double px = P.x;
+    double py = P.y;
+    double dx = xc - px;
+    double dy = yc - py;
+    double d = sqrt(dx * dx + dy * dy);
+
+    if (d < r) {
+        return {};
+    }
+
+    double phi = atan2(dy, dx);
+    double cos_delta = -r / d;
+    double delta = acos(cos_delta);
+
+    double theta1 = phi + delta;
+    double theta2 = phi - delta;
+
+    position_coord c1{xc + r * cos(theta1), yc + r * sin(theta1)};
+    position_coord c2{xc + r * cos(theta2), yc + r * sin(theta2)};
+
+    return {c1, c2};
+}
+
+// distance的辅助函数：求弧长
+double arcLength(const position_coord& C,
+                 const position_coord& D,
+                 const Circle& Z) {
+    double xc = Z.x;
+    double yc = Z.y;
+    double dx1 = C.x - xc;
+    double dy1 = C.y - yc;
+    double dx2 = D.x - xc;
+    double dy2 = D.y - yc;
+
+    double dot = dx1 * dx2 + dy1 * dy2;
+    double r = Z.r;
+
+    double cos_theta = dot / (r * r);
+    cos_theta = std::max(std::min(cos_theta, 1.0), -1.0);
+    double theta = acos(cos_theta);
+
+    double arc = r * theta;
+    double min_arc = std::min(arc, r * (2 * M_PI - theta));
+    return min_arc;
+}
+
+// 计算等效距离
 double distance(const position_coord& a, const position_coord& b) {
-    // 当前实现为欧氏距离（勾股定理）
-    return std::hypot(a.x - b.x, a.y - b.y);
-    // 未来扩展：可添加障碍物绕行路径计算，例如：
-    // return path_planning_with_obstacles(a, b, obstacles);
+    for (const auto& obstacle : obstacles) {
+        if (doesSegmentIntersectCircle(a, b, obstacle)) {
+            const Circle& Z = obstacle;
+
+            auto A_tangents = getTangentPoints(a, Z);
+            auto B_tangents = getTangentPoints(b, Z);
+
+            if (A_tangents.empty() || B_tangents.empty()) {
+                return std::numeric_limits<double>::infinity();
+            }
+
+            double min_total = INFINITY;
+            position_coord c_best, d_best;
+
+            for (const auto& c : A_tangents) {
+                for (const auto& d : B_tangents) {
+                    double current_arc = arcLength(c, d, Z);
+                    double total =
+                        distance(a, c) + current_arc + distance(d, b);
+                    if (total < min_total) {
+                        min_total = total;
+                        c_best = c;
+                        d_best = d;
+                    }
+                }
+            }
+
+            return min_total;
+        }
+    }
+
+    return sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
+vector<double> swarm(const vector<UAV>& initial_uavs,
+                     const candidate& candidate1,
+                     int accomplished) {
+    vector<bool> movable(drone_num, true);  // 标记无人机是否可移动
+    vector<int> movable_indices;            // 可移动无人机的索引
+
+    // 确定可移动的无人机
+    for (int i = 0; i < drone_num; ++i) {
+        const UAV& uav = initial_uavs[i];
+        // 不可移动的条件判断
+        if (uav.working_time < 0 || uav.hovering_time < 0) {
+            movable[i] = false;
+        } else if (uav.working_time == 0) {
+            // 检查是否存在编号更小的无人机工作时间为0
+            for (int j = 0; j < i; ++j) {
+                if (initial_uavs[j].working_time == 0) {
+                    movable[i] = false;
+                    break;
+                }
+            }
+        }
+        if (movable[i]) {
+            movable_indices.push_back(i);
+        }
+    }
+
+    int movable_drones_count = movable_indices.size();
+    if (movable_drones_count == 0) {
+        // 无无人机可移动，返回全0角度
+        return vector<double>(drone_num, 0.0);
+    }
+
+    // 粒子群算法参数（动态计算）
+    const int num_particles = 4 * drone_num + 10;  // 粒子数量
+    const int max_iter = 10 * drone_num + 30;      // 最大迭代次数
+    const double w = 0.7;                          // 惯性权重
+    const double c1 = 1.5;                         // 认知系数
+    const double c2 = 1.5;                         // 社会系数
+
+    // 粒子结构体定义
+    struct Particle {
+        vector<double> position;  // 当前角度向量
+        vector<double> velocity;
+        vector<double> pbest_pos;  // 个人最优位置
+        double pbest_fitness;
+
+        Particle(int dim) {
+            position.resize(dim);
+            velocity.resize(dim);
+            pbest_pos.resize(dim);
+            // 初始化角度为随机值，速度初始化为0
+            for (int i = 0; i < dim; ++i) {
+                position[i] = rng.random() * 2 * M_PI;
+                velocity[i] = 0.0;
+                pbest_pos[i] = position[i];
+            }
+            pbest_fitness = INF;
+        }
+    };
+
+    vector<Particle> particles;
+    for (int i = 0; i < num_particles; ++i) {
+        particles.emplace_back(
+            movable_drones_count);  // 使用可移动无人机数量作为维度
+    }
+
+    // 全局最优位置和适应度
+    vector<double> gbest_pos(movable_drones_count);
+    double gbest_fitness = INF;
+
+    // 粒子群迭代优化
+    for (int iter = 0; iter < max_iter; ++iter) {
+        for (auto& p : particles) {
+            vector<UAV> new_uavs = initial_uavs;  // 复制初始无人机状态
+            // 根据当前角度计算新位置
+            for (int k = 0; k < movable_drones_count; ++k) {
+                int drone_idx = movable_indices[k];
+                double angle = p.position[k];
+                // 计算位移（使用全局速度和时间步长）
+                double dx = speed * cos(angle) * time_step;
+                double dy = speed * sin(angle) * time_step;
+                new_uavs[drone_idx].position.x += dx;
+                new_uavs[drone_idx].position.y += dy;
+            }
+
+            // 调用适应度函数计算当前粒子的适应度
+            double fitness =
+                calculateFitness(new_uavs, candidate1, accomplished);
+
+            // 更新个人最优和全局最优
+            if (fitness < p.pbest_fitness) {
+                p.pbest_fitness = fitness;
+                p.pbest_pos = p.position;
+                if (fitness < gbest_fitness) {
+                    gbest_fitness = fitness;
+                    gbest_pos = p.position;
+                }
+            }
+        }
+
+        // 更新粒子速度和位置
+        for (auto& p : particles) {
+            for (int i = 0; i < movable_drones_count; ++i) {
+                // 生成随机数
+                double r1 = rng.random();
+                double r2 = rng.random();
+
+                // 速度更新公式（PSO标准公式）
+                double vel_c1 = c1 * r1 * (p.pbest_pos[i] - p.position[i]);
+                double vel_c2 = c2 * r2 * (gbest_pos[i] - p.position[i]);
+                double new_velocity = w * p.velocity[i] + vel_c1 + vel_c2;
+                p.velocity[i] = new_velocity;
+
+                // 更新位置并限制角度范围在[0, 2π)
+                p.position[i] += p.velocity[i];
+                while (p.position[i] < 0)
+                    p.position[i] += 2 * M_PI;
+                while (p.position[i] >= 2 * M_PI)
+                    p.position[i] -= 2 * M_PI;
+            }
+        }
+    }
+
+    // 生成最终角度结果
+    vector<double> result(drone_num, 0.0);
+    for (int k = 0; k < movable_drones_count; ++k) {
+        int idx = movable_indices[k];
+        result[idx] = gbest_pos[k];
+    }
+
+    return result;
+}
+
+double calculateFitness(const vector<UAV>& uavs,
+                        const candidate candidate1,
+                        int accomplished) {
+    /**
+     * @brief 计算无人机编队状态的适应度值
+     *
+     * 函数首先检查无人机状态的合法性，若不合法返回INF。
+     * 合法情况下计算两部分距离之和：
+     * 1. 每个无人机到其下一个任务点的等效距离之和
+     * 2. 全局下一个目标点到负责无人机的等效距离
+     *
+     * @param uavs 无人机状态数组
+     * @param candidate1 当前任务分配方案
+     * @param accomplished 已完成的目标数量
+     * @return double 适应度值
+     */
+
+    // 判断当前状态是否合法，不合法直接返回无穷大
+    if (!isStateLegal(uavs, accomplished, candidate1)) {
+        return INF;
+    }
+
+    double total = 0.0;
+
+    // 遍历所有无人机（编号从1到drone_num）
+    for (int uav_id = 1; uav_id <= drone_num; ++uav_id) {
+        int next_task_order = -1;  // 存储下一个任务的排序号
+
+        // 查找该无人机的第一个未完成任务（排序号大于已完成数目的最小值）
+        for (const auto& assignment : candidate1.assignment) {
+            if (assignment.first == uav_id &&
+                assignment.second > accomplished) {
+                if (next_task_order == -1 ||
+                    assignment.second < next_task_order) {
+                    next_task_order = assignment.second;
+                }
+            }
+        }
+
+        // 如果没有找到下一个任务，跳过计算
+        if (next_task_order == -1)
+            continue;
+
+        // 获取任务坐标（排序号从1开始，数组索引需减1）
+        const task& next_task = tasks[next_task_order - 1];
+        position_coord task_pos = {next_task.x, next_task.y};
+
+        // 获取该无人机当前位置
+        const UAV& uav = uavs[uav_id - 1];  // 数组0-based索引
+
+        // 累加等效距离（调用distance函数）
+        total += distance(uav.position, task_pos);
+    }
+
+    // 处理全局下一个目标点的特殊计算
+    if (accomplished < target_num) {
+        // 全局下一个目标点的排序号
+        int global_next_order = accomplished + 1;
+
+        // 查找负责该任务的无人机编号
+        int target_uav_id = -1;
+        for (const auto& assignment : candidate1.assignment) {
+            if (assignment.second == global_next_order) {
+                target_uav_id = assignment.first;
+                break;
+            }
+        }
+
+        // 如果找到有效无人机（理论上必能找到）
+        if (target_uav_id != -1) {
+            // 获取该无人机和目标点坐标
+            const UAV& target_uav = uavs[target_uav_id - 1];
+            const task& global_next_task = tasks[global_next_order - 1];
+            position_coord global_task_pos = {global_next_task.x,
+                                              global_next_task.y};
+
+            // 累加等效距离
+            total += distance(target_uav.position, global_task_pos);
+        }
+    }
+
+    return total;
+}
+
+bool isStateLegal(const vector<UAV>& uavs,
+                  int accomplished,
+                  const candidate& candidate1) {
+    /**
+     * @brief 判断无人机状态是否合法
+     *
+     * 检查以下5种不合法情况：
+     * 1. 已起飞无人机间距离小于50m
+     * 2. 无人机间距离大于1000m
+     * 3. 工作时间超限
+     * 4. 与障碍物碰撞
+     * 5. 不按顺序访问目标点
+     *
+     * @param uavs 无人机状态数组
+     * @param accomplished 已完成的目标数量
+     * @param candidate1 当前任务分配方案
+     * @return true 状态合法
+     * @return false 状态不合法
+     */
+
+    // 条件1：检查已起飞无人机间的最小安全距离
+    for (size_t i = 0; i < uavs.size(); ++i) {
+        for (size_t j = i + 1; j < uavs.size(); ++j) {
+            const UAV& a = uavs[i];
+            const UAV& b = uavs[j];
+            if (a.working_time > 0 && b.working_time > 0) {
+                double dx = a.position.x - b.position.x;
+                double dy = a.position.y - b.position.y;
+                double dist = sqrt(dx * dx + dy * dy);
+                if (dist < min_dist)
+                    return false;
+            }
+        }
+    }
+
+    // 条件2：检查无人机间的最大通信距离
+    for (size_t i = 0; i < uavs.size(); ++i) {
+        for (size_t j = i + 1; j < uavs.size(); ++j) {
+            const UAV& a = uavs[i];
+            const UAV& b = uavs[j];
+            double dx = a.position.x - b.position.x;
+            double dy = a.position.y - b.position.y;
+            double dist = sqrt(dx * dx + dy * dy);
+            if (dist > max_dist)
+                return false;
+        }
+    }
+
+    // 条件3：检查工作时间是否超限
+    for (const UAV& uav : uavs) {
+        if (uav.working_time > uav.max_working_time)
+            return false;
+    }
+
+    // 条件4：检查与障碍物的碰撞
+    for (const UAV& uav : uavs) {
+        for (const Circle& obs : obstacles) {
+            double dx = uav.position.x - obs.x;
+            double dy = uav.position.y - obs.y;
+            double dist = sqrt(dx * dx + dy * dy);
+            if (dist <= obs.r)
+                return false;
+        }
+    }
+
+    // 条件5：检查不按顺序访问目标点
+    if (accomplished < target_num) {
+        // 获取全局下一个目标点的排序号
+        int global_next_order = accomplished + 1;
+
+        // 收集所有后续目标点坐标
+        vector<position_coord> later_positions;
+        for (int order = global_next_order + 1; order <= target_num; ++order) {
+            const task& t = tasks[order - 1];
+            later_positions.push_back({t.x, t.y});
+        }
+
+        // 查找负责全局下一个目标的无人机
+        int assigned_uav_id = -1;
+        for (const auto& p : candidate1.assignment) {
+            if (p.second == global_next_order) {
+                assigned_uav_id = p.first;
+                break;
+            }
+        }
+
+        // 检查其他无人机是否过早访问后续目标点
+        for (size_t uav_idx = 0; uav_idx < uavs.size(); ++uav_idx) {
+            int current_uav_id = uav_idx + 1;
+            if (current_uav_id == assigned_uav_id)
+                continue;  // 跳过负责无人机
+
+            const UAV& uav = uavs[uav_idx];
+            for (const position_coord& pos : later_positions) {
+                double dx = uav.position.x - pos.x;
+                double dy = uav.position.y - pos.y;
+                double dist = sqrt(dx * dx + dy * dy);
+                if (dist < epsilon)
+                    return false;
+            }
+        }
+    }
+
+    return true;
 }
