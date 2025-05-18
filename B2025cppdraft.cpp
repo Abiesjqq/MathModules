@@ -104,7 +104,7 @@ vector<UAV> uavs;
 vector<task> tasks;
 vector<position_coord> targets;
 RandomGenerator rng;
-const int INF = 1e5;
+const int INF = 1e6;
 const int speed = 50;
 const int max_dist = 1000;
 const int min_dist = 50;
@@ -406,7 +406,7 @@ double getPriorityWeight(TaskType priority) {
 }
 
 candidate GA() {
-    int max_gen = 15 * drone_num + 50;                // 最大迭代次数
+    int max_gen = 0 * drone_num + 5;                // 最大迭代次数
     int pop_size = 10 * drone_num;                    // 种群大小
     int reserved_candidates = drone_num;              // 保留的精英个体数
     int unreserved = pop_size - reserved_candidates;  // 非精英个体数
@@ -441,6 +441,7 @@ candidate GA() {
     best_candidate.cost = INF;
 
     // 评估初始种群
+#pragma omp parallel for
     for (int i = 0; i < pop_size; i++) {
         population[i].cost = calculateCost(population[i]);
     }
@@ -574,6 +575,7 @@ candidate GA() {
         }
 
         // 评估新种群
+#pragma omp parallel for
         for (int i = 0; i < pop_size; i++) {
             temp_population[i].cost = calculateCost(temp_population[i]);
         }
@@ -666,12 +668,12 @@ bool feasibility(const candidate& candidate1) {
                     t.priority == NORMAL_DELIVERY) {
                     total_load += t.requirement.load;
                 }
-                printf("Task %d: Load = %d\n", t.num, total_load);
+                // printf("Task %d: Load = %d\n", t.num, total_load);
 
                 // 计算航程（使用distance函数）
                 position_coord current_pos = {t.x, t.y};
                 total_distance += distance(prev_pos, current_pos);
-                printf("Task %d: Distance = %.2f\n", t.num, total_distance);
+                // printf("Task %d: Distance = %.2f\n", t.num, total_distance);
                 // 检查与障碍物的碰撞
                 prev_pos = current_pos;  // 更新前一个位置为当前位置
             }
@@ -687,7 +689,7 @@ bool feasibility(const candidate& candidate1) {
             start = end;  // 移动到下一个航行段的起始位置
         }
     }
-    printf("Feasibility check passed for candidate.\n");
+    // printf("Feasibility check passed for candidate.\n");
     return true;  // 所有条件满足
 }
 
@@ -732,35 +734,89 @@ double calculateCost(candidate candidate1) {
         }
     }
 
-    while (accomplished < total_tasks) {
+    while (accomplished < total_tasks && T < 1000) {
         // -------------
-        printf("Time: %.2f, Accomplished: %d\n", T, accomplished);
+        //  printf("Time: %.2f, Accomplished: %d\n", T, accomplished);
 
         // 判断哪些无人机可移动
-        bool has_near_drone = false;
-        for (const UAV& uav : current_uavs) {
-            double dx = uav.position.x;
-            double dy = uav.position.y;
-            double dist = sqrt(dx * dx + dy * dy);
-            if (dist > 0 && dist < 50) {
-                has_near_drone = true;
+        // bool has_near_drone = false;
+        // for (const UAV& uav : current_uavs) {
+        //     double dx = uav.position.x;
+        //     double dy = uav.position.y;
+        //     double dist = sqrt(dx * dx + dy * dy);
+        //     if (dist > 0 && dist < 50) {
+        //         has_near_drone = true;
+        //         break;
+        //     }
+        // }
+
+        // vector<bool> movable(drone_num, false);
+        // for (int i = 0; i < drone_num; ++i) {
+        //     const UAV& uav = current_uavs[i];
+        //     bool cond1 = (uav.working_time >= 0);
+        //     bool cond2 = (uav.hovering_time >= 0);
+        //     movable[i] = cond1 && cond2;
+
+        //     if (movable[i] && has_near_drone) {
+        //         double dist_origin = sqrt(uav.position.x * uav.position.x +
+        //                                   uav.position.y * uav.position.y);
+        //         if (dist_origin <= epsilon && dist_origin > 0) {
+        //             movable[i] = false;
+        //         }
+        //     }
+        // }
+        vector<bool> movable(drone_num, true);  // 标记无人机是否可移动
+        vector<int> movable_indices;            // 可移动无人机的索引
+
+        // 确定可移动的无人机
+        vector<double> distances(drone_num);  // 预先计算所有无人机到原点的距离
+        for (int i = 0; i < drone_num; ++i) {
+            const UAV& uav = current_uavs[i];
+            movable[i] = (uav.working_time >= 0) && (uav.hovering_time >= 0);
+            double x = uav.position.x;
+            double y = uav.position.y;
+            distances[i] = sqrt(x * x + y * y);
+        }
+
+        // 检查是否有无人机在原点附近50米（不含原点）
+        bool has_drone_in_50m = false;
+        for (int i = 0; i < drone_num; ++i) {
+            if (distances[i] > epsilon && distances[i] <= 50) {
+                has_drone_in_50m = true;
                 break;
             }
         }
 
-        vector<bool> movable(drone_num, false);
-        for (int i = 0; i < drone_num; ++i) {
-            const UAV& uav = current_uavs[i];
-            bool cond1 = (uav.working_time >= 0);
-            bool cond2 = (uav.hovering_time >= 0);
-            movable[i] = cond1 && cond2;
-
-            if (movable[i] && has_near_drone) {
-                double dist_origin = sqrt(uav.position.x * uav.position.x +
-                                          uav.position.y * uav.position.y);
-                if (dist_origin <= epsilon && dist_origin > 0) {
+        // 处理原点相关的条件
+        if (has_drone_in_50m) {
+            // 所有在原点的无人机不可移动
+            for (int i = 0; i < drone_num; ++i) {
+                if (distances[i] <= epsilon) {
                     movable[i] = false;
                 }
+            }
+        } else {
+            // 收集在原点且满足基本条件的无人机
+            vector<int> eligible_indices;
+            for (int i = 0; i < drone_num; ++i) {
+                if (distances[i] <= epsilon && movable[i]) {
+                    eligible_indices.push_back(i);
+                }
+            }
+            if (!eligible_indices.empty()) {
+                int min_idx = *min_element(eligible_indices.begin(),
+                                           eligible_indices.end());
+                for (int idx : eligible_indices) {
+                    movable[idx] = (idx == min_idx);  // 只有最小编号的可移动
+                }
+            }
+        }
+
+        // 收集可移动的无人机索引
+        movable_indices.clear();
+        for (int i = 0; i < drone_num; ++i) {
+            if (movable[i]) {
+                movable_indices.push_back(i);
             }
         }
 
@@ -769,11 +825,11 @@ double calculateCost(candidate candidate1) {
             swarm(current_uavs, candidate1, accomplished);
 
         // ------------
-        printf("Directions: ");
+        // printf("Directions: ");
         for (double dir : directions) {
-            printf("%.2f ", dir);
+            // printf("%.2f ", dir);
         }
-        printf("\n");
+        // printf("\n");
 
         // 移动无人机
         for (int i = 0; i < drone_num; ++i) {
@@ -898,7 +954,13 @@ double calculateCost(candidate candidate1) {
     if (num_recon == 0)
         T3 = 0;
 
-    return 5 * T1 + 2 * T2 + T3;
+    double res = 5 * T1 + 2 * T2 + T3;
+    if (res == -5.00) {
+        res = INF;
+    }
+    printf("res=%.2f\n", res);
+
+    return res;
 }
 
 // distance的辅助函数：判断线段与障碍的相交性
@@ -986,11 +1048,11 @@ double arcLength(const position_coord& C,
     double r = Z.r;
 
     double cos_theta = dot / (r * r);
-    cos_theta = std::max(std::min(cos_theta, 1.0), -1.0);
+    cos_theta = std::max(std::min((double)cos_theta, 1.0), -1.0);
     double theta = acos(cos_theta);
 
     double arc = r * theta;
-    double min_arc = std::min(arc, r * (2 * M_PI - theta));
+    double min_arc = std::min((double)arc, r * (2 * M_PI - theta));
     return min_arc;
 }
 
@@ -1089,11 +1151,11 @@ vector<double> swarm(const vector<UAV>& initial_uavs,
     }
 
     // 调试输出
-    printf("Movable drones: ");
-    for (int idx : movable_indices) {
-        printf("%d ", idx);
-    }
-    printf("\nNumber of movable drones: %d\n", movable_indices.size());
+    //  printf("Movable drones: ");
+    // for (int idx : movable_indices) {
+    //     printf("%d ", idx);
+    //  }
+    // printf("\nNumber of movable drones: %d\n", movable_indices.size());
 
     if (movable_indices.empty()) {
         return vector<double>(drone_num, 0.0);  // 无无人机可移动
@@ -1102,7 +1164,7 @@ vector<double> swarm(const vector<UAV>& initial_uavs,
     int movable_drones_count = movable_indices.size();
 
     // ---------------
-    printf("Number of movable drones: %d\n", movable_drones_count);
+    //   printf("Number of movable drones: %d\n", movable_drones_count);
 
     if (movable_drones_count == 0) {
         // 无无人机可移动，返回全0角度
@@ -1150,7 +1212,9 @@ vector<double> swarm(const vector<UAV>& initial_uavs,
     double gbest_fitness = INF;
 
     // 粒子群迭代优化
+#pragma omp parallel for
     for (int iter = 0; iter < max_iter; ++iter) {
+#pragma omp parallel for
         for (auto& p : particles) {
             vector<UAV> new_uavs = initial_uavs;  // 复制初始无人机状态
             // 根据当前角度计算新位置
@@ -1191,14 +1255,15 @@ vector<double> swarm(const vector<UAV>& initial_uavs,
             }
 
             // ---------------
-            printf("gbest_pos: ");
-            for (double pos : gbest_pos) {
-                printf("%.2f ", pos);
-            }
-            printf("\n");
+            // printf("gbest_pos: ");
+            // for (double pos : gbest_pos) {
+            //     printf("%.2f ", pos);
+            // }
+            // printf("\n");
         }
 
         // 更新粒子速度和位置
+#pragma omp parallel for
         for (auto& p : particles) {
             for (int i = 0; i < movable_drones_count; ++i) {
                 // 生成随机数
@@ -1265,7 +1330,7 @@ double calculateFitness(const vector<UAV>& uavs,
 
     // 判断当前状态是否合法，不合法直接返回无穷大
     if (!isStateLegal(uavs, accomplished, candidate1)) {
-        printf("Not in legal state.\n");
+        // printf("Not in legal state.\n");
         return INF;
     }
 
@@ -1361,12 +1426,6 @@ bool isStateLegal(const vector<UAV>& uavs,
                 double dy = a.position.y - b.position.y;
                 double dist = sqrt(dx * dx + dy * dy);
                 if (dist < min_dist) {
-                    printf(
-                        "Minimum distance violated between UAV %zu and UAV "
-                        "%zu\n",
-                        i, j);
-                    printf("place: (%.2f, %.2f) (%.2f, %.2f)\n", a.position.x,
-                           a.position.y, b.position.x, b.position.y);
                     return false;
                 }
             }
@@ -1382,9 +1441,6 @@ bool isStateLegal(const vector<UAV>& uavs,
             double dy = a.position.y - b.position.y;
             double dist = sqrt(dx * dx + dy * dy);
             if (dist > max_dist) {
-                printf(
-                    "Maximum distance violated between UAV %zu and UAV %zu\n",
-                    i, j);
                 return false;
             }
         }
@@ -1393,7 +1449,6 @@ bool isStateLegal(const vector<UAV>& uavs,
     // 条件3：检查工作时间是否超限
     for (const UAV& uav : uavs) {
         if (uav.working_time > uav.max_working_time) {
-            printf("Working time exceeded\n");
             return false;
         }
     }
@@ -1405,31 +1460,7 @@ bool isStateLegal(const vector<UAV>& uavs,
             double dy = uav.position.y - obs.y;
             double dist = sqrt(dx * dx + dy * dy);
             if (dist <= obs.r) {
-                printf("Collision with obstacle at (%.2f, %.2f)\n", obs.x,
-                       obs.y);
                 return false;
-            }
-        }
-    }
-
-    // 条件5：检查不按顺序访问目标点
-    if (accomplished < target_num) {
-        // 获取全局下一个目标点的排序号
-        int global_next_order = accomplished + 1;
-
-        // 收集所有后续目标点坐标
-        vector<position_coord> later_positions;
-        for (int order = global_next_order + 1; order <= target_num; ++order) {
-            const task& t = tasks[order - 1];
-            later_positions.push_back({t.x, t.y});
-        }
-
-        // 查找负责全局下一个目标的无人机
-        int assigned_uav_id = -1;
-        for (const auto& p : candidate1.assignment) {
-            if (p.second == global_next_order) {
-                assigned_uav_id = p.first;
-                break;
             }
         }
     }
